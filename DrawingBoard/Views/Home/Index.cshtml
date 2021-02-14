@@ -1,0 +1,341 @@
+﻿@{
+    ViewData["Title"] = "Home Page";
+}
+<style>
+#drawingpad{
+    border: 1px solid black;
+
+}
+</style>
+<div class="modal fade" id="exampleModal" tabindex="-1" role="dialog" aria-labelledby="exampleModalLabel" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button id="closeModalButton" type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form>
+          <div class="form-group">
+            <label for="message-text" class="col-form-label">Message:</label>
+            <textarea class="form-control" id="message-text"></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+        <button id="changeText" type="button" class="btn btn-primary">Change Text!</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+<div class="row">
+    <div class="btn-toolbar col-" role="toolbar" aria-label="Toolbar with button groups">
+        <div class="btn-group-vertical" role="group" aria-label="First group">
+            <button id="openModal" hidden type="button" class="btn btn-primary" data-toggle="modal" data-target="#exampleModal" >Open modal for</button>
+            <button onclick="tool1.activate();" type="button" data-tool-name="pencil" class="btn btn-secondary tool-button">Рисование</button>
+            <button onclick="tool2.activate();" type="button" data-tool-name="test" class="btn btn-secondary tool-button">Мышь</button>
+            <button onclick="tool3.activate();" type="button" data-tool-name="test2" class="btn btn-secondary tool-button">Текст</button>
+            <button onclick="tool4.activate();" type="button" data-tool-name="test3" class="btn btn-secondary tool-button">Заметка</button>
+            <button onclick="tool5.activate();" type="button" data-tool-name="test3" class="btn btn-secondary tool-button">Стирка</button>
+        </div>
+    </div>
+    <div class="col-xl"><canvas id="drawingpad" width="850" height="600"></canvas></div>
+</div>
+</div>
+    
+
+@section Scripts{
+    <script src="~/js/paper-full.min.js"></script>
+    <script>
+
+        const hubConnection = new signalR.HubConnectionBuilder()
+            .withUrl("/board")
+            .configureLogging(signalR.LogLevel.Information)
+            .build();
+
+        async function start() {
+            try {
+                await hubConnection.start();
+                console.log("SignalR Connected");
+            } catch(err) {
+                console.log(err);
+                setTimeout(start, 5000);
+            }
+        }
+        hubConnection.on("ReceiveDraw", function(data){
+            project.importSVG(data);
+        })
+        hubConnection.on("ReceiveConnect", function(data){
+                var array = data.split('|||');
+                for(let i = 0; i < array.length; i++){
+                    
+                    project.importSVG(array[i]);
+                }
+        })
+
+        hubConnection.on("ReceiveMove", function(dataq, x, y){
+            var items = paper.project.getItems({
+                data:{
+                    remember: dataq
+                }
+            });
+            items[0].position = new Point(Number(x),Number(y)); 
+        })
+
+        hubConnection.on("ReceiveChangeText", function(dataq, text){
+            var items = paper.project.getItems({
+                data:{
+                    remember: dataq
+                }
+            });
+            items[0].content = text;
+        })
+
+        hubConnection.on("ReceiveRemove", function(dataq){
+            var items = paper.project.getItems({
+                data: {
+                    remember: dataq
+                }
+            });
+            items[0].remove();
+        })
+
+        hubConnection.on("ReceiveChangeSize", function(dataq, width, height){
+            var items = paper.project.getItems({
+                data: {
+                    remember: dataq
+                }
+            });
+            items[0].bounds.width = Number(width);
+            items[0].bounds.height = Number(height);
+        });
+        
+        start();
+        paper.install(window);
+        var canvas = document.getElementById('drawingpad');
+        var tool1, tool2, tool3, tool4, tool5;
+        var game = false;
+
+        window.onload = function(){
+
+            function unselectTextPath(){
+                if(textPath) textPath.bounds.selected = false;
+            }
+
+            $('#changeText').on('click',function(){  
+                var textPathSVG = textPath.exportSVG({asString: true});
+
+                textPath.content = $('#message-text').val();     
+                $('#closeModalButton').click();
+                hubConnection.invoke('ChangeText', textPath.data.remember, textPath.content);  
+                $.ajax({
+                    url: "/Home/Update",
+                    type: "POST",
+                    data: { old : textPathSVG,
+                            newPath : textPath.exportSVG({asString: true}) }
+                    });  
+
+            })
+
+            paper.setup('drawingpad');
+            var hitOptions = {
+	            segments: true,
+	            stroke: true,
+	            fill: true,
+	            tolerance: 5
+            };
+
+            var segment, path, textPath;
+            var stateMouse = 'move';
+            var state = true;
+            var num = 0;
+            var count = 0;
+            var movePath = false;
+            tool1 = new paper.Tool();
+            tool1.onMouseDown = function(event){
+                unselectTextPath();
+                path = new Path();
+                path.data.remember = hubConnection.connectionId + num;
+                num+=1;
+                path.strokeColor = 'rebeccaPurple';
+                path.strokeWidth = 3;
+                path.add(event.point);
+            }
+            tool1.onMouseDrag = function(event){
+                path.add(event.point);
+            }
+            tool1.onMouseUp = function(event){
+                hubConnection.invoke("Draw", path.exportSVG({asString: true}));
+                $.ajax({
+                    url: "/Home/Draw",
+                    type: "POST",
+                    data: { draw : path.exportSVG({asString: true}) }
+                    
+                });
+            }
+
+            tool2 = new paper.Tool();
+            var infoPath;
+            tool2.onMouseDown = function(event){
+                unselectTextPath();
+                
+                path = null;
+                var hitResult = event.item;
+                if(!hitResult)
+                    return
+
+                if(hitResult.data.type === 'group'){
+                     if(hitResult.hitTest(event.point, {segments: true, tolerance: 3})){
+                         stateMouse = 'edit'
+                     }else{
+                         stateMouse = 'move'
+                     }
+                    
+                }else{
+                    stateMouse = 'move';
+                }
+                if(stateMouse === 'move'){
+                    if (hitResult) {
+		                path = hitResult;
+                        infoPath = hitResult.exportSVG({asString: true});
+	                }
+                }else{
+                    path = hitResult;
+                    infoPath = hitResult.exportSVG({asString: true});
+                    if(path.hitTest(event.point, {segments: true, tolerance: 3})){
+                            if(path.firstChild.segments[3].point.isClose(event.point, 3)){
+                               state = true;
+                           
+                            var opposite = 1;
+                            path.data.from = path.firstChild.segments[opposite].point;
+                            path.data.to = path.firstChild.segments[3].point;
+                             }else{
+                                 state = false;
+                             }
+                    }
+                }
+                
+            }
+            tool2.onMouseMove = function(event){
+                count = 0;
+                project.activeLayer.selected = false;
+                if(event.item)
+                    event.item.selected = true;
+            }
+
+            tool2.onMouseDrag = function(event){
+                if(stateMouse === 'move'){
+                    if(path){
+                         path.position = event.point;
+                        hubConnection.invoke("Move", path.data.remember, event.point.x.toString(), event.point.y.toString());  
+                    } 
+                }else if(state){
+                    path.bounds = new Rectangle(path.data.from, event.point);
+                    hubConnection.invoke("ChangeSize", path.data.remember, path.bounds.width.toString(), path.bounds.height.toString());
+                }
+            }
+            tool2.onMouseUp = function(event){
+                    if(path){
+                         $.ajax({
+                            url: "/Home/Update",
+                            type: "POST",
+                            data: { old : infoPath,
+                            newPath : path.exportSVG({asString: true}) }
+                        });
+                    }
+            }
+
+            tool3 = new paper.Tool();
+            tool3.onMouseDown = function(event){
+                unselectTextPath();
+                
+                var hitResult = event.item;
+                if(hitResult){
+                  if(hitResult.data.type == 'text') {
+                    textPath = hitResult; 
+                    textPath.bounds.selected = true;
+                    $('#message-text').val(textPath.content);
+                    $('#openModal').click();    
+                  }
+                }else{
+                    textPath = new PointText({
+                        point: event.point,
+                        content: 'SIMPLE\nTEXT',
+                        fillColor: 'black',
+                        fontFamily: 'Courier New',
+                        fontWeight: 'bold',
+                        fontSize: 20
+                    });
+                    textPath.data.remember = hubConnection.connectionId + num;
+                    textPath.data.type = 'text';
+                    num+=1;
+                    
+                    $.ajax({
+                    url: "/Home/Draw",
+                    type: "POST",
+                    data: { draw : textPath.exportSVG({asString: true}) }
+                    }); 
+                    hubConnection.invoke("Draw", textPath.exportSVG({asString: true}));
+                }
+               
+            }
+            
+            tool4 = new paper.Tool();
+            
+            tool4.onMouseDown = function(event){
+               unselectTextPath();
+               path = new Path.Rectangle(new Point(event.point.x - 5, event.point.y - 20), new Size(110, 110));
+               path.strokeColor = 'black';
+               path.fillColor = 'yellow';
+               path.opacity = 0.7;
+
+               var text = new PointText({
+                    point: event.point,
+                    content: 'empty',
+                    fillColor: 'black',
+                    fontFamily: 'Courier New',
+                    fontWeight: 'bold',
+                    fontSize: 14
+                });
+                var group = new Group([path, text]);
+                group.data.remember = hubConnection.connectionId + num;
+                group.data.type = 'group';
+                var text = prompt('Введите заметку: ');
+                if(text != null){
+                    text = text.replace(/ /g," ").replace(/\s+/g,"\n");
+                    group.lastChild.content = text;
+                } 
+                hubConnection.invoke("Draw", group.exportSVG({asString: true}));
+                $.ajax({
+                    url: "/Home/Draw",
+                    type: "POST",
+                    data: { draw : group.exportSVG({asString: true}) }
+                }); 
+                
+                num+=1;
+            }
+            tool5 = new paper.Tool();
+            tool5.onMouseDown = function(event){
+                unselectTextPath();
+                var hitResult = event.item;
+                if(hitResult){
+                   hitResult.remove();
+                   hubConnection.invoke("Remove", hitResult.data.remember);
+                   $.ajax({
+                    url: "/Home/Delete",
+                    type: "POST",
+                    data: { draw : hitResult.exportSVG({asString: true}) }
+                });
+                }
+                
+            }
+        }
+
+
+
+    </script>
+}
